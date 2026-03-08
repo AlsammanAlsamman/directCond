@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+
+# Snakemake
+.snakemake/
+
+# Pipeline outputs
+results/
+logs/
+
+# Editor/system
+.DS_Store
+Thumbs.db
+prompts/
+inputs/
+old_inputs/
+resources/

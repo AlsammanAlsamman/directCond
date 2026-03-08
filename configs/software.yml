@@ -1,0 +1,29 @@
+# Software modules and tool configurations
+plink2:
+  module: "plink2/2.00a3.3lm"
+  version: "2.00a3.3lm"
+  params:
+    memory: "--memory 32000"
+    threads: "--threads 2"
+
+r:
+  module: "R/4.4.1-mkl bioconductor/3.19"
+  version: "4.4.1"
+  params:
+    r_libs_user: "~/R/packages:/usr/local/analysis/bioconductor/3.19/R/library:/usr/local/analysis/R/4.4.1-mkl/lib/R/library"
+    susieR_max_causal: "10"
+    coverage: "0.95"
+
+python:
+  module: "python/3.9"
+  version: "3.9"
+
+bcftools:
+  module: "bcftools/1.15"
+  version: "1.15"
+  params:
+    output_type: "-O z"
+    threads: "--threads 2"
+gcta:
+  module: "gcta"
+  binary: "gcta"

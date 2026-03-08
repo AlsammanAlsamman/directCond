@@ -1,0 +1,23 @@
+# Analysis configuration and paths
+project_name: "direct-cond"
+version: "0.1.0"
+results_dir: "results"
+
+# Inputs for the first rule
+
+# Population reference panels
+ref_panel:
+  EUR: "resources/ref/EUR/g1000_eur"
+  AMR: "resources/ref/AMR/g1000_amr"
+  EAS: "resources/ref/EAS/g1000_eas"
+
+target_analyses:
+  KLF2_ASIAN:
+    regions_file: "inputs/regions.tsv"
+    gwas_file: "inputs/ASIANq2.tsv"
+    reference_population: "EAS"
+# Default resources
+default_resources:
+  mem_mb: 32000
+  cores: 2
+  time: "00:30:00"
