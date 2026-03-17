@@ -140,54 +140,43 @@ if [[ $(wc -l < "$MA_FILE") -le 1 ]]; then
   exit 1
 fi
 
-FIRST_SNP=$(awk '
-BEGIN { FS="\t" }
-NR==1 { next }
-{
-  snp=$1
-  p=$7 + 0
-  if (snp=="") next
-  if (best=="" || p < bestp) {
-    best=snp
-    bestp=p
-  }
-}
-END { print best }
-' "$MA_FILE")
-
-if [[ -z "$FIRST_SNP" ]]; then
-  echo "Could not determine initial conditioning SNP from $MA_FILE" >&2
-  exit 1
-fi
-
-printf "%s\n" "$FIRST_SNP" > "$COND_FILE"
-echo "Initial conditioning SNP: $FIRST_SNP" >&2
-
 P_THRESHOLD="5e-8"
 MAX_ITERS=50
 ITER=1
 FINAL_PREFIX=""
+TOTAL_SKIPPED_FOR_COLLINEARITY=0
+INITIAL_CANDIDATES_FILE="${OUT_PREFIX}.initial_candidates.tsv"
+REMAINING_CANDIDATES_FILE="${OUT_PREFIX}.remaining_candidates.tsv"
 
-while [[ $ITER -le $MAX_ITERS ]]; do
-  ITER_PREFIX="${OUT_PREFIX}.iter${ITER}"
+build_initial_candidate_list() {
+  local ma_file="$1"
+  local out_file="$2"
 
-  "$GCTA_BIN" \
-    --bfile "$BFILE_PREFIX" \
-    --chr "$TARGET_CHR" \
-    --cojo-file "$MA_FILE" \
-    --cojo-cond "$COND_FILE" \
-    --out "$ITER_PREFIX"
-
-  if [[ ! -f "${ITER_PREFIX}.cma.cojo" ]]; then
-    echo "Expected COJO output missing: ${ITER_PREFIX}.cma.cojo" >&2
-    exit 1
-  fi
-
-  FINAL_PREFIX="$ITER_PREFIX"
-
-  NEXT_LINE=$(awk -v thr="$P_THRESHOLD" '
+  awk -v thr="$P_THRESHOLD" '
 BEGIN { FS="\t"; OFS="\t" }
-NR==1 {
+NR==1 { next }
+{
+  snp=$1
+  raw_p=$7
+  if (snp=="" || raw_p=="" || toupper(raw_p)=="NA") next
+  p=raw_p + 0
+  if (p < thr) print snp, p
+}
+' "$ma_file" | sort -k2,2g > "$out_file"
+}
+
+prune_remaining_candidates() {
+  local remaining_file="$1"
+  local cma_file="$2"
+  local tmp_file="${remaining_file}.tmp"
+
+  awk -v thr="$P_THRESHOLD" '
+BEGIN { FS="\t"; OFS="\t" }
+FNR==NR {
+  keep[$1]=1
+  next
+}
+FNR==1 {
   for (i=1; i<=NF; i++) {
     h=tolower($i)
     gsub(/^ +| +$/, "", h)
@@ -199,35 +188,129 @@ NR==1 {
 {
   if (!c_snp || !c_pc) next
   snp=$c_snp
-  pc=$c_pc + 0
-  if (snp=="") next
-  if (pc < thr) {
-    if (best=="" || pc < best_pc) {
-      best=snp
-      best_pc=pc
-    }
-  }
+  raw_pc=$c_pc
+  if (!(snp in keep) || raw_pc=="" || toupper(raw_pc)=="NA") next
+  pc=raw_pc + 0
+  if (pc < thr) print snp, pc
 }
-END {
-  if (best!="") print best, best_pc
-}
-' "${ITER_PREFIX}.cma.cojo")
+' "$remaining_file" "$cma_file" | sort -k2,2g > "$tmp_file"
 
-  if [[ -z "$NEXT_LINE" ]]; then
-    echo "Stopping iterative conditioning at iteration ${ITER}: no SNP with pC < ${P_THRESHOLD}." >&2
+  mv -f "$tmp_file" "$remaining_file"
+}
+
+drop_snp_from_file() {
+  local file_path="$1"
+  local snp_to_drop="$2"
+  local tmp_file="${file_path}.tmp"
+
+  awk -v snp="$snp_to_drop" '$1 != snp { print }' "$file_path" > "$tmp_file"
+  mv -f "$tmp_file" "$file_path"
+}
+
+peek_next_candidate() {
+  local file_path="$1"
+  awk 'NF > 0 { print $1; exit }' "$file_path"
+}
+
+run_gcta_attempt() {
+  local cond_file="$1"
+  local iter_prefix="$2"
+  local attempt_log="${iter_prefix}.gcta.log"
+
+  rm -f "${iter_prefix}.cma.cojo" "${iter_prefix}.jma.cojo" "${iter_prefix}.ldr.cojo" "${iter_prefix}.given.cojo"
+
+  if "$GCTA_BIN" \
+    --bfile "$BFILE_PREFIX" \
+    --chr "$TARGET_CHR" \
+    --cojo-file "$MA_FILE" \
+    --cojo-cond "$cond_file" \
+    --out "$iter_prefix" > "$attempt_log" 2>&1; then
+    cat "$attempt_log"
+    return 0
+  fi
+
+  cat "$attempt_log"
+  return 1
+}
+
+build_initial_candidate_list "$MA_FILE" "$INITIAL_CANDIDATES_FILE"
+
+if [[ ! -s "$INITIAL_CANDIDATES_FILE" ]]; then
+  echo "No SNPs with p < ${P_THRESHOLD} found in $MA_FILE" >&2
+  exit 1
+fi
+
+cp -f "$INITIAL_CANDIDATES_FILE" "$REMAINING_CANDIDATES_FILE"
+
+FIRST_SNP=$(peek_next_candidate "$REMAINING_CANDIDATES_FILE")
+if [[ -z "$FIRST_SNP" ]]; then
+  echo "Could not determine initial conditioning SNP from $INITIAL_CANDIDATES_FILE" >&2
+  exit 1
+fi
+
+printf "%s\n" "$FIRST_SNP" > "$COND_FILE"
+drop_snp_from_file "$REMAINING_CANDIDATES_FILE" "$FIRST_SNP"
+LAST_ADDED_SNP=""
+echo "Initial conditioning SNP: $FIRST_SNP" >&2
+
+while [[ $ITER -le $MAX_ITERS ]]; do
+  ITER_PREFIX="${OUT_PREFIX}.iter${ITER}"
+
+  ATTEMPT_OK=0
+  if run_gcta_attempt "$COND_FILE" "$ITER_PREFIX"; then
+    ATTEMPT_OK=1
+  fi
+
+  if [[ ! -f "${ITER_PREFIX}.cma.cojo" ]]; then
+    if grep -qi "collinearity problem" "${ITER_PREFIX}.gcta.log"; then
+      if [[ -n "$LAST_ADDED_SNP" ]]; then
+        echo "Iteration ${ITER}: skipping SNP ${LAST_ADDED_SNP} due to collinearity." >&2
+        TOTAL_SKIPPED_FOR_COLLINEARITY=$((TOTAL_SKIPPED_FOR_COLLINEARITY + 1))
+        grep -Fxv "$LAST_ADDED_SNP" "$COND_FILE" > "${COND_FILE}.tmp"
+        mv -f "${COND_FILE}.tmp" "$COND_FILE"
+        LAST_ADDED_SNP=""
+
+        NEXT_SNP=$(peek_next_candidate "$REMAINING_CANDIDATES_FILE")
+        if [[ -z "$NEXT_SNP" ]]; then
+          echo "Stopping iterative conditioning at iteration ${ITER}: no remaining non-conditioned SNPs from the initial significant list." >&2
+          break
+        fi
+
+        drop_snp_from_file "$REMAINING_CANDIDATES_FILE" "$NEXT_SNP"
+        printf "%s\n" "$NEXT_SNP" >> "$COND_FILE"
+        LAST_ADDED_SNP="$NEXT_SNP"
+        echo "Iteration ${ITER}: trying next SNP ${NEXT_SNP} from the fixed candidate list." >&2
+        continue
+      fi
+
+      echo "Stopping iterative conditioning at iteration ${ITER}: current conditioned SNP set is collinear." >&2
+      break
+    fi
+
+    if [[ $ATTEMPT_OK -eq 0 ]]; then
+      echo "GCTA failed for iteration ${ITER}." >&2
+    fi
+    echo "Expected COJO output missing: ${ITER_PREFIX}.cma.cojo" >&2
+    exit 1
+  fi
+
+  FINAL_PREFIX="$ITER_PREFIX"
+  LAST_ADDED_SNP=""
+
+  if [[ -s "$REMAINING_CANDIDATES_FILE" ]]; then
+    prune_remaining_candidates "$REMAINING_CANDIDATES_FILE" "${ITER_PREFIX}.cma.cojo"
+  fi
+
+  NEXT_SNP=$(peek_next_candidate "$REMAINING_CANDIDATES_FILE")
+  if [[ -z "$NEXT_SNP" ]]; then
+    echo "Stopping iterative conditioning at iteration ${ITER}: no SNP from the initial significant list remains below ${P_THRESHOLD}." >&2
     break
   fi
 
-  NEXT_SNP=$(echo "$NEXT_LINE" | awk '{print $1}')
-  NEXT_PC=$(echo "$NEXT_LINE" | awk '{print $2}')
-
-  if grep -Fxq "$NEXT_SNP" "$COND_FILE"; then
-    echo "Stopping iterative conditioning at iteration ${ITER}: next SNP ${NEXT_SNP} already conditioned." >&2
-    break
-  fi
-
-  echo "$NEXT_SNP" >> "$COND_FILE"
-  echo "Iteration ${ITER}: adding SNP ${NEXT_SNP} with pC=${NEXT_PC}" >&2
+  drop_snp_from_file "$REMAINING_CANDIDATES_FILE" "$NEXT_SNP"
+  printf "%s\n" "$NEXT_SNP" >> "$COND_FILE"
+  LAST_ADDED_SNP="$NEXT_SNP"
+  echo "Iteration ${ITER}: adding next SNP ${NEXT_SNP} from the fixed candidate list." >&2
   ITER=$((ITER + 1))
 done
 
@@ -289,4 +372,4 @@ FILENAME==ARGV[4] {
 mv -f "$TMP_CMA" "$FINAL_CMA"
 
 LAST_COND=$(tail -n 1 "$COND_FILE")
-printf "ok\tchr=%s\tpos=%s\tlast_cond_snp=%s\tn_cond=%s\n" "$TARGET_CHR" "$TARGET_POS" "$LAST_COND" "$(wc -l < "$COND_FILE")" > "$OUT_DONE"
+printf "ok\tchr=%s\tpos=%s\tlast_cond_snp=%s\tn_cond=%s\tskipped_collinear=%s\tinitial_candidates=%s\tremaining_candidates=%s\n" "$TARGET_CHR" "$TARGET_POS" "$LAST_COND" "$(wc -l < "$COND_FILE")" "$TOTAL_SKIPPED_FOR_COLLINEARITY" "$(wc -l < "$INITIAL_CANDIDATES_FILE")" "$(wc -l < "$REMAINING_CANDIDATES_FILE")" > "$OUT_DONE"

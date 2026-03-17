@@ -11,13 +11,16 @@ from pathlib import Path
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Extract GWAS and reference-panel subset around chr:pos using window_bp centered on pos"
+        description="Extract GWAS and reference-panel subset using explicit chr:start-end bounds"
     )
     parser.add_argument("--gwas-file", required=True)
     parser.add_argument("--ref-prefix", required=True)
     parser.add_argument("--chr", required=True)
-    parser.add_argument("--pos", type=int, required=True)
-    parser.add_argument("--window-bp", type=int, required=True)
+    parser.add_argument("--start", type=int)
+    parser.add_argument("--end", type=int)
+    # Legacy compatibility: allow pos/window_bp if start/end are not provided.
+    parser.add_argument("--pos", type=int)
+    parser.add_argument("--window-bp", type=int)
     parser.add_argument("--out-gwas-window", required=True)
     parser.add_argument("--out-ref-prefix", required=True)
     parser.add_argument("--out-done", required=True)
@@ -86,9 +89,18 @@ def run_plink_subset(plink_bin: str, ref_prefix: str, chrom: str, start_bp: int,
 
 def main() -> int:
     args = parse_args()
-    half_window = args.window_bp // 2
-    start_bp = max(1, args.pos - half_window)
-    end_bp = args.pos + half_window
+    if args.start is not None and args.end is not None:
+        start_bp = args.start
+        end_bp = args.end
+    elif args.pos is not None and args.window_bp is not None:
+        half_window = args.window_bp // 2
+        start_bp = max(1, args.pos - half_window)
+        end_bp = args.pos + half_window
+    else:
+        raise ValueError("Provide either --start/--end or legacy --pos/--window-bp")
+
+    if start_bp > end_bp:
+        raise ValueError(f"Invalid interval: start ({start_bp}) > end ({end_bp})")
 
     extracted = extract_gwas_window(args.gwas_file, args.chr, start_bp, end_bp, args.out_gwas_window)
     if extracted == 0:
@@ -98,7 +110,7 @@ def main() -> int:
 
     Path(args.out_done).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out_done).write_text(
-        f"ok\tchr={args.chr}\tpos={args.pos}\twindow_bp={args.window_bp}\tstart={start_bp}\tend={end_bp}\n",
+        f"ok\tchr={args.chr}\tstart={start_bp}\tend={end_bp}\n",
         encoding="utf-8",
     )
     return 0

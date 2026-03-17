@@ -14,9 +14,10 @@ def _load_regions(path):
             raise ValueError(f"Empty regions file: {path}")
 
         header = re.split(r"\s+", lines[0])
-        expected = ["locus_id", "chr", "pos", "window_bp"]
-        if header != expected:
-            raise ValueError("regions.tsv header must be exactly: locus_id chr pos window_bp")
+        expected_old = ["locus_id", "chr", "pos", "window_bp"]
+        expected_new = ["locus_id", "chr", "start", "end"]
+        if header not in (expected_old, expected_new):
+            raise ValueError("regions.tsv header must be exactly: locus_id chr start end (or legacy: locus_id chr pos window_bp)")
 
         for line in lines[1:]:
             parts = re.split(r"\s+", line)

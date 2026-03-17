@@ -4,6 +4,7 @@ include: "rules/extract_regions.smk"
 include: "rules/harmonize_gwas.smk"
 include: "rules/cojo_condition.smk"
 include: "rules/plot_conditional_iterations.smk"
+include: "rules/indiv_cond_eval.smk"
 
 rule all:
     input:

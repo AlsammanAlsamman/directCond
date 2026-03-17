@@ -14,18 +14,27 @@ def _load_regions(path):
             raise ValueError(f"Empty regions file: {path}")
 
         header = re.split(r"\s+", lines[0])
-        expected = ["locus_id", "chr", "pos", "window_bp"]
-        if header != expected:
-            raise ValueError("regions.tsv header must be exactly: locus_id chr pos window_bp")
+        expected_old = ["locus_id", "chr", "pos", "window_bp"]
+        expected_new = ["locus_id", "chr", "start", "end"]
+        if header not in (expected_old, expected_new):
+            raise ValueError("regions.tsv header must be exactly: locus_id chr start end (or legacy: locus_id chr pos window_bp)")
 
         for line in lines[1:]:
             parts = re.split(r"\s+", line)
             if len(parts) < 4:
                 continue
             locus_id = parts[0].strip()
+            chrom = str(parts[1]).strip()
+            if header == expected_new:
+                start_bp = int(parts[2])
+                end_bp = int(parts[3])
+                pos = (start_bp + end_bp) // 2
+            else:
+                pos = int(parts[2])
+
             rows[locus_id] = {
-                "chr": str(parts[1]).strip(),
-                "pos": int(parts[2]),
+                "chr": chrom,
+                "pos": pos,
             }
     return rows
 
@@ -91,7 +100,7 @@ rule plot_conditional_iterations:
     log:
         os.path.join(RESULTS_BASE, "log", "plot_conditioning", "{analysis}", "{locus_id}.log"),
     resources:
-        mem_mb=RESOURCE_MEM_MB,
+        mem_mb=131072,
         cores=RESOURCE_CORES,
         time=RESOURCE_TIME,
     wildcard_constraints:

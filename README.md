@@ -74,4 +74,5 @@ For each analysis/locus under `results/<project_name>/`:
 ## Notes
 
 - If running on HPC, ensure module names in `configs/software.yml` match your environment.
+- Iterative COJO now builds one fixed list of SNPs with `p < 5e-8`, conditions on them in significance order, and only removes candidates that lose significance after each conditioning step. It does not add new SNPs to the candidate list.
 - Plotting is robust to missing optional R packages and uses fallbacks when needed.
