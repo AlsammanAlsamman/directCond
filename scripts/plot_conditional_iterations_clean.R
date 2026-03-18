@@ -46,7 +46,7 @@ get_arg <- function(flag, required = TRUE, default = NA_character_) {
 cojo_ma <- get_arg("--cojo-ma")
 cojo_final <- get_arg("--cojo-final")
 cojo_dir <- get_arg("--cojo-dir")
-ref_prefix <- get_arg("--ref-prefix")
+ref_prefix <- get_arg("--ref-prefix", required = FALSE, default = "")
 target_chr <- as.integer(get_arg("--target-chr"))
 target_pos <- as.numeric(get_arg("--target-pos"))
 analysis_name <- get_arg("--analysis", required = FALSE, default = "analysis")
@@ -62,7 +62,9 @@ out_done <- get_arg("--out-done")
 if (!file.exists(cojo_final)) stop(paste("cojo final file not found:", cojo_final))
 if (!file.exists(cojo_ma)) stop(paste("cojo.ma not found:", cojo_ma))
 if (!dir.exists(cojo_dir)) stop(paste("cojo directory not found:", cojo_dir))
-if (!file.exists(paste0(ref_prefix, ".bed"))) stop(paste("Reference BED not found:", paste0(ref_prefix, ".bed")))
+if (nzchar(ref_prefix) && !file.exists(paste0(ref_prefix, ".bed"))) {
+  stop(paste("Reference BED not found:", paste0(ref_prefix, ".bed")))
+}
 
 dir.create(dirname(out_pdf), recursive = TRUE, showWarnings = FALSE)
 dir.create(dirname(out_png), recursive = TRUE, showWarnings = FALSE)
@@ -150,6 +152,7 @@ pick_first_col <- function(nms, candidates) {
 }
 
 load_reference_panel <- function(ref_prefix_path) {
+  if (!nzchar(ref_prefix_path)) return(NULL)
   if (!HAVE_BIGSNPR) return(NULL)
   bed_file <- paste0(ref_prefix_path, ".bed")
   rds_file <- paste0(ref_prefix_path, ".rds")
@@ -312,47 +315,9 @@ after_df <- as.data.table(after_df)
 before_df <- compute_ld_r2(annotate_ref_index(before_df, ref_map), ref_obj, target_chr, target_pos)
 after_df <- compute_ld_r2(annotate_ref_index(after_df, ref_map), ref_obj, target_chr, target_pos)
 
-iter_files <- list.files(cojo_dir, pattern = "^cojo\\.iter[0-9]+\\.cma\\.cojo$", full.names = TRUE)
-iter_dfs <- list()
-if (length(iter_files) > 0) {
-  iter_ids <- as.integer(sub("^cojo\\.iter([0-9]+)\\.cma\\.cojo$", "\\1", basename(iter_files)))
-  iter_files <- iter_files[order(iter_ids)]
-
-  for (f in iter_files) {
-    d <- if (HAVE_DATA_TABLE) data.table::fread(f) else read.table(f, header = TRUE, sep = "", stringsAsFactors = FALSE)
-    if (!all(c("bp", "pC") %in% names(d))) next
-    d <- d[, .(bp = as.numeric(bp), pC = as.numeric(pC))]
-    d <- d[is.finite(bp) & is.finite(pC) & pC > 0]
-    if (nrow(d) == 0) next
-    d[, iter := sub("\\.cma\\.cojo$", "", basename(f))]
-    iter_dfs[[length(iter_dfs) + 1]] <- d
-  }
-}
-
 all_p <- c(before_df$p, after_df$pC)
 all_p <- all_p[is.finite(all_p) & all_p > 0]
 shared_ylim <- c(0, max(-log10(all_p), na.rm = TRUE) * 1.05)
-
-draw_iterations_panel <- function() {
-  plot(NA, xlim = range(before_df$pos, na.rm = TRUE), ylim = shared_ylim,
-       xlab = "Position (bp)", ylab = "-log10(pC)",
-       main = paste0(analysis_name, " | ", locus_id, " | All iterations"))
-  abline(h = -log10(THRESH_P), lty = 1, col = "red", lwd = THRESH_LWD)
-
-  if (length(iter_dfs) > 0) {
-    iter_all <- data.table::rbindlist(iter_dfs)
-    labels <- unique(iter_all$iter)
-    cols <- setNames(rainbow(length(labels)), labels)
-    for (lab in labels) {
-      d <- iter_all[iter == lab]
-      points(d$bp, -log10(d$pC), pch = 16, cex = 0.5, col = cols[[lab]])
-    }
-    legend("topright", legend = labels, pch = 16, col = unname(cols[labels]), bty = "n", cex = 0.75)
-  } else {
-    points(after_df$pos, -log10(after_df$pC), pch = 16, cex = 0.5, col = "firebrick")
-    legend("topright", legend = "final", pch = 16, col = "firebrick", bty = "n", cex = 0.75)
-  }
-}
 
 before_title <- paste0(analysis_name, " | ", locus_id, " | Before conditioning")
 after_title <- paste0(analysis_name, " | ", locus_id, " | After final conditioning")

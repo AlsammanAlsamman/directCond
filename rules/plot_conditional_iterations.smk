@@ -46,6 +46,18 @@ def _resource_value(name, default_value):
         return default_value
 
 
+def _analysis_bool(path, default_value):
+    try:
+        value = get_analysis_value(path)
+    except Exception:
+        return default_value
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return bool(value)
+
+
 TARGET_ANALYSES = get_analysis_value(["target_analyses"])
 RESULTS_DIR = get_results_dir()
 PROJECT_NAME = str(get_analysis_value(["project_name"]))
@@ -73,8 +85,15 @@ ALL_PLOT_DONE_TARGETS = [
     for locus_id in sorted(regions.keys())
 ]
 
+ALL_PLOT_SIMPLE_DONE_TARGETS = [
+    os.path.join(RESULTS_BASE, "04_plots_simple", analysis_name, locus_id, "plot_simple.done")
+    for analysis_name, regions in ANALYSIS_REGIONS.items()
+    for locus_id in sorted(regions.keys())
+]
+
 R_MODULE = get_software_module("r")
 R_LIBS_USER = str(get_software_value("r", ["params", "r_libs_user"], default=""))
+PLOT_USE_REF_LD = _analysis_bool(["plotting", "use_ref_ld"], True)
 
 
 rule plot_conditional_iterations:
@@ -82,7 +101,11 @@ rule plot_conditional_iterations:
         cojo_done=os.path.join(RESULTS_BASE, "03_cojo", "{analysis}", "{locus_id}", "cojo.done"),
         cojo_final=os.path.join(RESULTS_BASE, "03_cojo", "{analysis}", "{locus_id}", "cojo.cma.cojo"),
         cojo_ma=os.path.join(RESULTS_BASE, "03_cojo", "{analysis}", "{locus_id}", "cojo.ma"),
-        ref_bed=os.path.join(RESULTS_BASE, "01_extract_regions", "{analysis}", "{locus_id}", "ref_subset.bed"),
+        ref_bed=lambda wc: (
+            os.path.join(RESULTS_BASE, "01_extract_regions", wc.analysis, wc.locus_id, "ref_subset.bed")
+            if PLOT_USE_REF_LD
+            else []
+        ),
     output:
         done=os.path.join(RESULTS_BASE, "04_plots", "{analysis}", "{locus_id}", "plot.done"),
         pdf=os.path.join(RESULTS_BASE, "04_plots", "{analysis}", "{locus_id}", "conditional_iterations.pdf"),
@@ -95,6 +118,12 @@ rule plot_conditional_iterations:
         r_module=R_MODULE,
         r_libs_user=R_LIBS_USER,
         cojo_dir=os.path.join(RESULTS_BASE, "03_cojo", "{analysis}", "{locus_id}"),
+        ref_prefix_arg=lambda wc: (
+            "--ref-prefix "
+            + os.path.join(RESULTS_BASE, "01_extract_regions", wc.analysis, wc.locus_id, "ref_subset")
+            if PLOT_USE_REF_LD
+            else ""
+        ),
         target_chr=lambda wc: PLOT_INDEX[(wc.analysis, wc.locus_id)]["chr"],
         target_pos=lambda wc: PLOT_INDEX[(wc.analysis, wc.locus_id)]["pos"],
     log:
@@ -116,7 +145,7 @@ rule plot_conditional_iterations:
           --cojo-ma {input.cojo_ma} \
           --cojo-final {input.cojo_final} \
           --cojo-dir {params.cojo_dir} \
-                    --ref-prefix "$(dirname {input.ref_bed})/ref_subset" \
+                    {params.ref_prefix_arg} \
                     --target-chr {params.target_chr} \
                     --target-pos {params.target_pos} \
           --analysis {wildcards.analysis} \
@@ -127,6 +156,45 @@ rule plot_conditional_iterations:
                     --out-after-pdf {output.after_pdf} \
                                         --out-before-png {output.before_png} \
                                         --out-after-png {output.after_png} \
+          --out-done {output.done} \
+          > {log} 2>&1
+        """
+
+
+rule plot_conditional_simple_gg:
+    input:
+        cojo_done=os.path.join(RESULTS_BASE, "03_cojo", "{analysis}", "{locus_id}", "cojo.done"),
+        cojo_final=os.path.join(RESULTS_BASE, "03_cojo", "{analysis}", "{locus_id}", "cojo.cma.cojo"),
+        cojo_ma=os.path.join(RESULTS_BASE, "03_cojo", "{analysis}", "{locus_id}", "cojo.ma"),
+    output:
+        done=os.path.join(RESULTS_BASE, "04_plots_simple", "{analysis}", "{locus_id}", "plot_simple.done"),
+    params:
+        r_module=R_MODULE,
+        r_libs_user=R_LIBS_USER,
+        cojo_dir=os.path.join(RESULTS_BASE, "03_cojo", "{analysis}", "{locus_id}"),
+        out_dir=os.path.join(RESULTS_BASE, "04_plots_simple", "{analysis}", "{locus_id}"),
+    log:
+        os.path.join(RESULTS_BASE, "log", "plot_conditioning", "{analysis}", "{locus_id}.simple.log"),
+    resources:
+        mem_mb=RESOURCE_MEM_MB,
+        cores=RESOURCE_CORES,
+        time=RESOURCE_TIME,
+    wildcard_constraints:
+        analysis=r"[A-Za-z0-9_\-\.]+",
+        locus_id=r"[A-Za-z0-9_\-\.]+",
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p "{params.out_dir}" "$(dirname {log})"
+        if command -v module >/dev/null 2>&1; then module load {params.r_module}; fi
+        if [ -n "{params.r_libs_user}" ]; then export R_LIBS_USER='{params.r_libs_user}'; fi
+        Rscript scripts/plot_conditional_simple_gg.R \
+          --cojo-ma {input.cojo_ma} \
+          --cojo-final {input.cojo_final} \
+          --cojo-dir {params.cojo_dir} \
+          --analysis {wildcards.analysis} \
+          --locus-id {wildcards.locus_id} \
+          --out-dir {params.out_dir} \
           --out-done {output.done} \
           > {log} 2>&1
         """

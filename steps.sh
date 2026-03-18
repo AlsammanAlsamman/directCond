@@ -31,3 +31,4 @@ set -euo pipefail
 ./submit.sh --snakefile Snakefile --cores 2 results/direct-cond/04_plots/RABGAP1L_ASIAN/RABGAP1L_TNFSF4/plot.done
 
 
+./submit.sh --snakefile Snakefile --cores 2 all_simple_plots

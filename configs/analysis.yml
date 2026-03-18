@@ -20,7 +20,11 @@ target_analyses:
     regions_file: "inputs/regions.tsv"
     gwas_file: "inputs/ASIANq2.tsv"
     reference_population: "EAS"
-    snpList_file: "inputs/RABGAP1L_snps.txt"
+    snpList_file: "inputs/target_snps.txt"
+
+plotting:
+  use_ref_ld: false
+
 # Default resources
 default_resources:
   mem_mb: 32000
