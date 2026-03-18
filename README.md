@@ -30,6 +30,7 @@ Simple Snakemake workflow for regional GWAS conditional analysis (COJO) and plot
    - set `project_name`
    - define `target_analyses`
    - point to GWAS and region input files
+   - optionally set `snpList_file` for any analysis to first condition on each SNP in that file individually and then run a combined conditioning pass on all listed SNPs during Step 03
 2. Edit `configs/software.yml`
    - set modules/binaries for `plink2`, `gcta`, and `r`
    - set `r.params.r_libs_user` if needed
@@ -74,5 +75,6 @@ For each analysis/locus under `results/<project_name>/`:
 ## Notes
 
 - If running on HPC, ensure module names in `configs/software.yml` match your environment.
+- If `target_analyses.<name>.snpList_file` is set, `cojo_condition` will first run one GCTA pass per listed SNP and write `cojo.individual.summary.tsv`, then run one combined GCTA pass with `--cojo-cond` on the full list instead of the default iterative selection workflow.
 - Iterative COJO now builds one fixed list of SNPs with `p < 5e-8`, conditions on them in significance order, and only removes candidates that lose significance after each conditioning step. It does not add new SNPs to the candidate list.
 - Plotting is robust to missing optional R packages and uses fallbacks when needed.

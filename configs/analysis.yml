@@ -12,10 +12,10 @@ ref_panel:
   EAS: "resources/ref/EAS/g1000_eas"
 
 target_analyses:
-  KLF2_ASIAN:
-    regions_file: "inputs/regions.tsv"
-    gwas_file: "inputs/ASIANq2.tsv"
-    reference_population: "EAS"
+  # KLF2_ASIAN:
+  #   regions_file: "inputs/regions.tsv"
+  #   gwas_file: "inputs/ASIANq2.tsv"
+  #   reference_population: "EAS"
   RABGAP1L_ASIAN:
     regions_file: "inputs/regions.tsv"
     gwas_file: "inputs/ASIANq2.tsv"

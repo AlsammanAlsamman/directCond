@@ -79,6 +79,11 @@ GCTA_BIN = str(get_software_value("gcta", ["binary"], default="gcta"))
 
 rule cojo_condition:
     input:
+        ALL_COJO_DONE_TARGETS
+
+
+rule cojo_condition_per_locus:
+    input:
         harmonize_done=os.path.join(RESULTS_BASE, "02_harmonized", "{analysis}", "{locus_id}", "harmonize.done"),
         gwas_harmonized=os.path.join(RESULTS_BASE, "02_harmonized", "{analysis}", "{locus_id}", "gwas_harmonized.tsv"),
         bed=os.path.join(RESULTS_BASE, "01_extract_regions", "{analysis}", "{locus_id}", "ref_subset.bed"),
@@ -89,9 +94,16 @@ rule cojo_condition:
         cojo=os.path.join(RESULTS_BASE, "03_cojo", "{analysis}", "{locus_id}", "cojo.cma.cojo"),
         ma=os.path.join(RESULTS_BASE, "03_cojo", "{analysis}", "{locus_id}", "cojo.ma"),
         cond_snp=os.path.join(RESULTS_BASE, "03_cojo", "{analysis}", "{locus_id}", "cojo.cond.snp"),
+        indiv_summary=os.path.join(RESULTS_BASE, "03_cojo", "{analysis}", "{locus_id}", "cojo.individual.summary.tsv"),
     params:
         target_chr=lambda wc: COJO_INDEX[(wc.analysis, wc.locus_id)]["chr"],
         target_pos=lambda wc: COJO_INDEX[(wc.analysis, wc.locus_id)]["pos"],
+        cond_snps_file=lambda wc: str(TARGET_ANALYSES[wc.analysis].get("snpList_file", "")),
+        cond_snps_arg=lambda wc: (
+            "--cond-snps-file " + str(TARGET_ANALYSES[wc.analysis].get("snpList_file", ""))
+            if TARGET_ANALYSES[wc.analysis].get("snpList_file")
+            else ""
+        ),
         gcta_module=GCTA_MODULE,
         gcta_bin=GCTA_BIN,
     log:
@@ -113,7 +125,9 @@ rule cojo_condition:
           --bfile-prefix "$(dirname {input.bed})/ref_subset" \
           --target-chr {params.target_chr} \
           --target-pos {params.target_pos} \
+                    {params.cond_snps_arg} \
           --out-prefix "$(dirname {output.cojo})/cojo" \
+                    --out-indiv-summary {output.indiv_summary} \
           --out-done {output.done} \
           --gcta-bin {params.gcta_bin} \
           > {log} 2>&1

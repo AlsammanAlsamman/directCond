@@ -9,7 +9,9 @@ Usage:
     --bfile-prefix <ref_subset_prefix> \
     --target-chr <chr> \
     --target-pos <pos> \
+    [--cond-snps-file <file_with_one_snp_per_line>] \
     --out-prefix <output_prefix_without_extension> \
+    [--out-indiv-summary <summary_tsv>] \
     --out-done <done_file> \
     [--gcta-bin <gcta_binary>]
 
@@ -22,6 +24,11 @@ Required arguments:
   --out-done     Done marker file path
 
 Optional arguments:
+  --cond-snps-file File with one SNP ID per line. If provided, run one COJO
+                   pass for each SNP individually first, then run one combined
+                   conditioning pass on all listed SNPs.
+  --out-indiv-summary TSV summary for the per-SNP individual conditioning runs.
+                   Default: <out-prefix>.individual.summary.tsv
   --gcta-bin     GCTA executable (default: gcta)
 EOF
 }
@@ -30,7 +37,9 @@ GWAS_FILE=""
 BFILE_PREFIX=""
 TARGET_CHR=""
 TARGET_POS=""
+COND_SNPS_FILE=""
 OUT_PREFIX=""
+OUT_INDIV_SUMMARY=""
 OUT_DONE=""
 GCTA_BIN="gcta"
 
@@ -40,7 +49,9 @@ while [[ $# -gt 0 ]]; do
     --bfile-prefix) BFILE_PREFIX="$2"; shift 2 ;;
     --target-chr) TARGET_CHR="$2"; shift 2 ;;
     --target-pos) TARGET_POS="$2"; shift 2 ;;
+    --cond-snps-file) COND_SNPS_FILE="$2"; shift 2 ;;
     --out-prefix) OUT_PREFIX="$2"; shift 2 ;;
+    --out-indiv-summary) OUT_INDIV_SUMMARY="$2"; shift 2 ;;
     --out-done) OUT_DONE="$2"; shift 2 ;;
     --gcta-bin) GCTA_BIN="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
@@ -63,6 +74,11 @@ if [[ ! -f "$GWAS_FILE" ]]; then
   exit 1
 fi
 
+if [[ -n "$COND_SNPS_FILE" && ! -f "$COND_SNPS_FILE" ]]; then
+  echo "Condition SNP list file not found: $COND_SNPS_FILE" >&2
+  exit 1
+fi
+
 for ext in bed bim fam; do
   if [[ ! -f "${BFILE_PREFIX}.${ext}" ]]; then
     echo "Missing reference panel file: ${BFILE_PREFIX}.${ext}" >&2
@@ -80,6 +96,155 @@ mkdir -p "$OUT_DIR" "$(dirname "$OUT_DONE")"
 
 MA_FILE="${OUT_PREFIX}.ma"
 COND_FILE="${OUT_PREFIX}.cond.snp"
+if [[ -z "$OUT_INDIV_SUMMARY" ]]; then
+  OUT_INDIV_SUMMARY="${OUT_PREFIX}.individual.summary.tsv"
+fi
+
+sanitize_for_path() {
+  printf '%s' "$1" | sed 's/[^A-Za-z0-9._-]/_/g'
+}
+
+count_significant_snps_in_cma() {
+  local cma_file="$1"
+  local eval_list_file="$2"
+
+  awk -v thr="5e-8" '
+BEGIN { FS="\t"; n=0 }
+FNR==NR {
+  snp=$1
+  gsub(/^[[:space:]]+|[[:space:]]+$/, "", snp)
+  if (snp!="") keep[snp]=1
+  next
+}
+FNR==1 {
+  for (i=1; i<=NF; i++) {
+    h=tolower($i)
+    gsub(/^ +| +$/, "", h)
+    if (h=="pc") c_pc=i
+    else if (h=="snp") c_snp=i
+  }
+  next
+}
+{
+  if (!c_pc || !c_snp) next
+  snp=$c_snp
+  pc=$c_pc
+  if (!(snp in keep)) next
+  if (pc=="" || toupper(pc)=="NA") next
+  if ((pc+0) < thr) n++
+}
+END { print n }
+' "$eval_list_file" "$cma_file"
+}
+
+run_individual_list_conditioning() {
+  local eval_list_file="$1"
+  local indiv_dir="${OUT_DIR}/individual"
+  local bim_chr
+  local n_evaluated=0
+
+  mkdir -p "$indiv_dir" "$(dirname "$OUT_INDIV_SUMMARY")"
+  printf "snp\tn_significant_after_cond\tstatus\tcma_file\n" > "$OUT_INDIV_SUMMARY"
+
+  bim_chr=$(awk 'NR==1 {print $1; exit}' "${BFILE_PREFIX}.bim")
+  if [[ -z "$bim_chr" ]]; then
+    echo "Unable to determine chromosome from BIM file: ${BFILE_PREFIX}.bim" >&2
+    exit 1
+  fi
+
+  while IFS= read -r snp || [[ -n "$snp" ]]; do
+    snp=$(printf '%s' "$snp" | tr -d '\r[:space:]')
+    [[ -z "$snp" ]] && continue
+
+    local safe_snp
+    local snp_dir
+    local single_cond_file
+    local indiv_prefix
+    local gcta_log
+    local status="ok"
+    local n_sig="NA"
+
+    safe_snp=$(sanitize_for_path "$snp")
+    snp_dir="${indiv_dir}/${safe_snp}"
+    single_cond_file="${snp_dir}/single.cond.snp"
+    indiv_prefix="${snp_dir}/cojo"
+    gcta_log="${snp_dir}/gcta.log"
+
+    mkdir -p "$snp_dir"
+    printf "%s\n" "$snp" > "$single_cond_file"
+
+    if ! "$GCTA_BIN" \
+      --bfile "$BFILE_PREFIX" \
+      --chr "$bim_chr" \
+      --cojo-file "$MA_FILE" \
+      --cojo-cond "$single_cond_file" \
+      --out "$indiv_prefix" > "$gcta_log" 2>&1; then
+      if grep -qi "collinearity problem" "$gcta_log"; then
+        status="collinear"
+      else
+        status="gcta_failed"
+      fi
+    elif [[ -f "${indiv_prefix}.cma.cojo" ]]; then
+      n_sig=$(count_significant_snps_in_cma "${indiv_prefix}.cma.cojo" "$eval_list_file")
+    else
+      status="missing_output"
+    fi
+
+    printf "%s\t%s\t%s\t%s\n" "$snp" "$n_sig" "$status" "${indiv_prefix}.cma.cojo" >> "$OUT_INDIV_SUMMARY"
+    n_evaluated=$((n_evaluated + 1))
+  done < "$eval_list_file"
+
+  if [[ $n_evaluated -eq 0 ]]; then
+    echo "No SNPs were available for individual conditioning from: $eval_list_file" >&2
+    exit 1
+  fi
+}
+
+append_conditioned_snps_to_final_cma() {
+  local final_cma="$1"
+  local tmp_cma="${final_cma}.tmp"
+
+  awk -F'\t' 'BEGIN{OFS="\t"}
+FILENAME==ARGV[1] {
+  if (FNR==1) { print; next }
+  existing[$2]=1
+  print
+  next
+}
+FILENAME==ARGV[2] {
+  if (FNR==1) next
+  ma_refA[$1]=toupper($2)
+  ma_freq[$1]=$4
+  ma_b[$1]=$5
+  ma_se[$1]=$6
+  ma_p[$1]=$7
+  ma_n[$1]=$8
+  next
+}
+FILENAME==ARGV[3] {
+  bim_chr[$2]=$1
+  bim_bp[$2]=$4
+  next
+}
+FILENAME==ARGV[4] {
+  snp=$1
+  if (snp=="" || (snp in existing) || (snp in added)) next
+  chr=(snp in bim_chr)?bim_chr[snp]:"NA"
+  bp=(snp in bim_bp)?bim_bp[snp]:"NA"
+  refA=(snp in ma_refA)?ma_refA[snp]:"NA"
+  freq=(snp in ma_freq)?ma_freq[snp]:"NA"
+  b=(snp in ma_b)?ma_b[snp]:"NA"
+  se=(snp in ma_se)?ma_se[snp]:"NA"
+  p=(snp in ma_p)?ma_p[snp]:"NA"
+  n=(snp in ma_n)?ma_n[snp]:"NA"
+  print chr,snp,bp,refA,freq,b,se,p,n,"NA","NA","NA","NA"
+  added[snp]=1
+  next
+}
+' "$final_cma" "$MA_FILE" "${BFILE_PREFIX}.bim" "$COND_FILE" > "$tmp_cma"
+
+  mv -f "$tmp_cma" "$final_cma"
+}
 
 printf "SNP\tA1\tA2\tfreq\tb\tse\tp\tN\n" > "$MA_FILE"
 
@@ -139,6 +304,47 @@ if [[ $(wc -l < "$MA_FILE") -le 1 ]]; then
   echo "No valid records written to MA file: $MA_FILE" >&2
   exit 1
 fi
+
+if [[ -n "$COND_SNPS_FILE" ]]; then
+  awk '{
+    gsub(/\r/, "", $0)
+    if (NF > 0) {
+      snp=$1
+      gsub(/\r/, "", snp)
+      print snp
+    }
+  }' "$COND_SNPS_FILE" > "$COND_FILE"
+
+  if [[ ! -s "$COND_FILE" ]]; then
+    echo "Condition SNP list is empty after filtering blank lines: $COND_SNPS_FILE" >&2
+    exit 1
+  fi
+
+  run_individual_list_conditioning "$COND_FILE"
+
+  if ! "$GCTA_BIN" \
+    --bfile "$BFILE_PREFIX" \
+    --chr "$TARGET_CHR" \
+    --cojo-file "$MA_FILE" \
+    --cojo-cond "$COND_FILE" \
+    --out "$OUT_PREFIX"; then
+    echo "GCTA failed while conditioning on SNP list: $COND_SNPS_FILE" >&2
+    exit 1
+  fi
+
+  if [[ ! -f "${OUT_PREFIX}.cma.cojo" ]]; then
+    echo "Expected COJO output missing: ${OUT_PREFIX}.cma.cojo" >&2
+    exit 1
+  fi
+
+  append_conditioned_snps_to_final_cma "${OUT_PREFIX}.cma.cojo"
+
+  printf "ok\tmode=list\tchr=%s\tpos=%s\tn_cond=%s\tcond_source=%s\tindiv_summary=%s\n" \
+    "$TARGET_CHR" "$TARGET_POS" "$(wc -l < "$COND_FILE")" "$COND_SNPS_FILE" "$OUT_INDIV_SUMMARY" > "$OUT_DONE"
+  exit 0
+fi
+
+printf "snp\tn_significant_after_cond\tstatus\tcma_file\n" > "$OUT_INDIV_SUMMARY"
 
 P_THRESHOLD="5e-8"
 MAX_ITERS=50
@@ -326,50 +532,7 @@ if [[ "$MA_FILE" != "${OUT_PREFIX}.ma" ]]; then
   cp -f "$MA_FILE" "${OUT_PREFIX}.ma"
 fi
 
-# Keep conditioned SNPs in final cma output and mark conditional fields as NA.
-FINAL_CMA="${OUT_PREFIX}.cma.cojo"
-TMP_CMA="${OUT_PREFIX}.cma.with_cond.tmp"
-
-awk -F'\t' 'BEGIN{OFS="\t"}
-FILENAME==ARGV[1] {
-  if (FNR==1) { print; next }
-  existing[$2]=1
-  print
-  next
-}
-FILENAME==ARGV[2] {
-  if (FNR==1) next
-  ma_refA[$1]=toupper($2)
-  ma_freq[$1]=$4
-  ma_b[$1]=$5
-  ma_se[$1]=$6
-  ma_p[$1]=$7
-  ma_n[$1]=$8
-  next
-}
-FILENAME==ARGV[3] {
-  bim_chr[$2]=$1
-  bim_bp[$2]=$4
-  next
-}
-FILENAME==ARGV[4] {
-  snp=$1
-  if (snp=="" || (snp in existing) || (snp in added)) next
-  chr=(snp in bim_chr)?bim_chr[snp]:"NA"
-  bp=(snp in bim_bp)?bim_bp[snp]:"NA"
-  refA=(snp in ma_refA)?ma_refA[snp]:"NA"
-  freq=(snp in ma_freq)?ma_freq[snp]:"NA"
-  b=(snp in ma_b)?ma_b[snp]:"NA"
-  se=(snp in ma_se)?ma_se[snp]:"NA"
-  p=(snp in ma_p)?ma_p[snp]:"NA"
-  n=(snp in ma_n)?ma_n[snp]:"NA"
-  print chr,snp,bp,refA,freq,b,se,p,n,"NA","NA","NA","NA"
-  added[snp]=1
-  next
-}
-' "$FINAL_CMA" "$MA_FILE" "${BFILE_PREFIX}.bim" "$COND_FILE" > "$TMP_CMA"
-
-mv -f "$TMP_CMA" "$FINAL_CMA"
+append_conditioned_snps_to_final_cma "${OUT_PREFIX}.cma.cojo"
 
 LAST_COND=$(tail -n 1 "$COND_FILE")
-printf "ok\tchr=%s\tpos=%s\tlast_cond_snp=%s\tn_cond=%s\tskipped_collinear=%s\tinitial_candidates=%s\tremaining_candidates=%s\n" "$TARGET_CHR" "$TARGET_POS" "$LAST_COND" "$(wc -l < "$COND_FILE")" "$TOTAL_SKIPPED_FOR_COLLINEARITY" "$(wc -l < "$INITIAL_CANDIDATES_FILE")" "$(wc -l < "$REMAINING_CANDIDATES_FILE")" > "$OUT_DONE"
+printf "ok\tmode=iterative\tchr=%s\tpos=%s\tlast_cond_snp=%s\tn_cond=%s\tskipped_collinear=%s\tinitial_candidates=%s\tremaining_candidates=%s\n" "$TARGET_CHR" "$TARGET_POS" "$LAST_COND" "$(wc -l < "$COND_FILE")" "$TOTAL_SKIPPED_FOR_COLLINEARITY" "$(wc -l < "$INITIAL_CANDIDATES_FILE")" "$(wc -l < "$REMAINING_CANDIDATES_FILE")" > "$OUT_DONE"

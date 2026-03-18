@@ -166,6 +166,12 @@ rule plot_conditional_simple_gg:
         cojo_done=os.path.join(RESULTS_BASE, "03_cojo", "{analysis}", "{locus_id}", "cojo.done"),
         cojo_final=os.path.join(RESULTS_BASE, "03_cojo", "{analysis}", "{locus_id}", "cojo.cma.cojo"),
         cojo_ma=os.path.join(RESULTS_BASE, "03_cojo", "{analysis}", "{locus_id}", "cojo.ma"),
+        cond_snp=os.path.join(RESULTS_BASE, "03_cojo", "{analysis}", "{locus_id}", "cojo.cond.snp"),
+        indiv_summary=lambda wc: (
+            os.path.join(RESULTS_BASE, "03_cojo", wc.analysis, wc.locus_id, "cojo.individual.summary.tsv")
+            if TARGET_ANALYSES[wc.analysis].get("snpList_file")
+            else []
+        ),
     output:
         done=os.path.join(RESULTS_BASE, "04_plots_simple", "{analysis}", "{locus_id}", "plot_simple.done"),
     params:
@@ -173,6 +179,11 @@ rule plot_conditional_simple_gg:
         r_libs_user=R_LIBS_USER,
         cojo_dir=os.path.join(RESULTS_BASE, "03_cojo", "{analysis}", "{locus_id}"),
         out_dir=os.path.join(RESULTS_BASE, "04_plots_simple", "{analysis}", "{locus_id}"),
+        indiv_summary_arg=lambda wc: (
+            "--indiv-summary " + os.path.join(RESULTS_BASE, "03_cojo", wc.analysis, wc.locus_id, "cojo.individual.summary.tsv")
+            if TARGET_ANALYSES[wc.analysis].get("snpList_file")
+            else ""
+        ),
     log:
         os.path.join(RESULTS_BASE, "log", "plot_conditioning", "{analysis}", "{locus_id}.simple.log"),
     resources:
@@ -191,6 +202,8 @@ rule plot_conditional_simple_gg:
         Rscript scripts/plot_conditional_simple_gg.R \
           --cojo-ma {input.cojo_ma} \
           --cojo-final {input.cojo_final} \
+                    --cond-snp {input.cond_snp} \
+                    {params.indiv_summary_arg} \
           --cojo-dir {params.cojo_dir} \
           --analysis {wildcards.analysis} \
           --locus-id {wildcards.locus_id} \
