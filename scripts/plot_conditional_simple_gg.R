@@ -147,42 +147,85 @@ fetch_gene_track <- function(chrom, xmin, xmax) {
   assign_gene_tracks(out)
 }
 
-before <- read_tsv(cojo_ma)
-required_before <- c("SNP", "p")
-missing_before <- setdiff(required_before, names(before))
-if (length(missing_before) > 0) {
-  stop("cojo.ma missing required columns: ", paste(missing_before, collapse = ", "))
+ma_tbl <- read_tsv(cojo_ma)
+required_ma <- c("SNP", "p")
+missing_ma <- setdiff(required_ma, names(ma_tbl))
+if (length(missing_ma) > 0) {
+  stop("cojo.ma missing required columns: ", paste(missing_ma, collapse = ", "))
 }
+ma_tbl <- ma_tbl[, c("SNP", "p")]
+ma_tbl$p <- suppressWarnings(as.numeric(ma_tbl$p))
 
 position_map <- read_tsv(cojo_final)
-required_position <- c("SNP", "Chr", "bp")
+required_position <- c("SNP", "bp", "p")
 missing_position <- setdiff(required_position, names(position_map))
 if (length(missing_position) > 0) {
-  stop("cojo final missing required columns for positions: ", paste(missing_position, collapse = ", "))
+  stop("cojo final missing required columns for plotting: ", paste(missing_position, collapse = ", "))
 }
 
-position_map <- unique(position_map[, c("SNP", "Chr", "bp")])
-position_map$Chr <- suppressWarnings(as.numeric(position_map$Chr))
-position_map$bp <- suppressWarnings(as.numeric(position_map$bp))
-locus_chrom <- unique(position_map$Chr[is.finite(position_map$Chr)])
-if (length(locus_chrom) == 0) {
-  locus_chrom <- NA_real_
-} else {
-  locus_chrom <- locus_chrom[1]
+locus_chrom <- NA_real_
+if ("Chr" %in% names(position_map)) {
+  chr_vals <- suppressWarnings(as.numeric(position_map$Chr))
+  chr_vals <- chr_vals[is.finite(chr_vals)]
+  if (length(chr_vals) > 0) locus_chrom <- chr_vals[1]
 }
 
-before <- merge(before[, c("SNP", "p")], position_map[, c("SNP", "bp")], by = "SNP", all.x = TRUE)
-before$p <- suppressWarnings(as.numeric(before$p))
+before <- unique(position_map[, c("SNP", "bp", "p")])
 before$pos <- suppressWarnings(as.numeric(before$bp))
-if (any(!is.finite(before$pos))) {
-  fallback_idx <- which(!is.finite(before$pos))
-  before$pos[fallback_idx] <- seq_len(length(fallback_idx))
-}
+before$p <- suppressWarnings(as.numeric(before$p))
 before$bp <- NULL
+
+if (any(!is.finite(before$p))) {
+  p_lookup <- ma_tbl
+  names(p_lookup) <- c("SNP", "p_ma")
+  before <- merge(before, p_lookup, by = "SNP", all.x = TRUE)
+  fill_idx <- which(!is.finite(before$p) & is.finite(before$p_ma))
+  if (length(fill_idx) > 0) before$p[fill_idx] <- before$p_ma[fill_idx]
+  before$p_ma <- NULL
+}
+
+before <- before[is.finite(before$pos) & is.finite(before$p) & before$p > 0, , drop = FALSE]
 
 cond_snps <- readLines(cond_snp, warn = FALSE)
 cond_snps <- trimws(cond_snps)
 cond_snps <- cond_snps[nzchar(cond_snps)]
+
+collect_snp_pos_from_cma <- function(path) {
+  if (is.na(path) || !nzchar(path) || !file.exists(path)) return(data.frame())
+  tbl <- read_tsv(path)
+  if (!("SNP" %in% names(tbl)) || !("bp" %in% names(tbl))) return(data.frame())
+  out <- unique(tbl[, c("SNP", "bp")])
+  out$pos <- suppressWarnings(as.numeric(out$bp))
+  out <- out[is.finite(out$pos), c("SNP", "pos"), drop = FALSE]
+  out
+}
+
+build_extended_pos_lookup <- function() {
+  lookup <- unique(before[, c("SNP", "pos")])
+
+  final_pos <- collect_snp_pos_from_cma(cojo_final)
+  if (nrow(final_pos) > 0) lookup <- unique(rbind(lookup, final_pos))
+
+  indiv_paths <- character(0)
+  if (!is.na(indiv_summary) && nzchar(indiv_summary) && file.exists(indiv_summary)) {
+    indiv_tbl <- read_tsv(indiv_summary)
+    if ("cma_file" %in% names(indiv_tbl)) {
+      indiv_paths <- as.character(indiv_tbl$cma_file)
+      indiv_paths <- indiv_paths[nzchar(indiv_paths)]
+    }
+  }
+
+  if (length(indiv_paths) > 0) {
+    for (p in indiv_paths) {
+      pos_tbl <- collect_snp_pos_from_cma(p)
+      if (nrow(pos_tbl) > 0) lookup <- unique(rbind(lookup, pos_tbl))
+    }
+  }
+
+  lookup
+}
+
+extended_pos_lookup <- build_extended_pos_lookup()
 
 build_plot_df <- function(data, p_col, state_label) {
   plot_df <- data[, c("SNP", "pos", p_col)]
@@ -268,7 +311,8 @@ for (entry in plot_entries) {
   y_vals <- -log10(plot_df$p)
   y_vals <- y_vals[is.finite(y_vals)]
   if (length(y_vals) == 0) next
-  y_top <- max(y_vals) * 1.05
+  threshold_y <- -log10(5e-8)
+  y_top <- max(c(max(y_vals), threshold_y), na.rm = TRUE) * 1.05
   if (!is.finite(y_top) || y_top <= 0) y_top <- 1
 
   gene_df <- data.frame()
@@ -333,6 +377,21 @@ for (entry in plot_entries) {
 
   if (identical(entry$label, "00_original")) {
     highlight_df <- before_only[before_only$is_condition_snp & is.finite(before_only$p) & before_only$p > 0, c("SNP", "pos", "p")]
+
+    missing_snps <- setdiff(cond_snps, highlight_df$SNP)
+    if (length(missing_snps) > 0) {
+      extra_pos <- extended_pos_lookup[extended_pos_lookup$SNP %in% missing_snps, , drop = FALSE]
+      if (nrow(extra_pos) > 0) {
+        p_lookup <- ma_tbl
+        names(p_lookup) <- c("SNP", "p")
+        extra_df <- merge(extra_pos, p_lookup, by = "SNP", all.x = TRUE)
+        extra_df <- extra_df[is.finite(extra_df$pos) & is.finite(extra_df$p) & extra_df$p > 0, c("SNP", "pos", "p"), drop = FALSE]
+        if (nrow(extra_df) > 0) {
+          highlight_df <- unique(rbind(highlight_df, extra_df))
+        }
+      }
+    }
+
     if (nrow(highlight_df) > 0) {
       p <- p +
         geom_point(
