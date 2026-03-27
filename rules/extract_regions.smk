@@ -125,6 +125,50 @@ def _regions_from_snp_list(gwas_file, snp_list_file, region_width):
     return {snp: found[snp] for snp in targets}
 
 
+def _regions_from_locus_chr_startend(path):
+    regions = {}
+    with open(path, "r", encoding="utf-8") as handle:
+        lines = [line.strip() for line in handle if line.strip()]
+    if not lines:
+        raise ValueError(f"Empty region file: {path}")
+
+    for idx, line in enumerate(lines):
+        parts = re.split(r"\s+", line)
+        if len(parts) < 4:
+            continue
+
+        # Optional header: LOCUS chr start end
+        if idx == 0:
+            h0 = parts[0].strip().lower()
+            h1 = parts[1].strip().lower()
+            h2 = parts[2].strip().lower()
+            h3 = parts[3].strip().lower()
+            if h0 in {"locus", "locus_id"} and h1 == "chr" and h2 == "start" and h3 == "end":
+                continue
+
+        locus_id = parts[0].strip()
+        chrom = str(parts[1]).strip()
+        start = int(float(parts[2]))
+        end = int(float(parts[3]))
+        if start > end:
+            start, end = end, start
+
+        key = locus_id
+        if key in regions:
+            key = f"{locus_id}_{chrom}_{start}_{end}"
+
+        regions[key] = {
+            "chr": chrom,
+            "start": start,
+            "end": end,
+        }
+
+    if not regions:
+        raise ValueError(f"No valid regions parsed from: {path}")
+
+    return regions
+
+
 def _cache_key(*parts):
     text = "|".join(str(p) for p in parts)
     return hashlib.sha1(text.encode("utf-8")).hexdigest()[:12]
@@ -158,34 +202,39 @@ for analysis_name, analysis_cfg in TARGET_ANALYSES.items():
     if "regions_file" in analysis_cfg and analysis_cfg["regions_file"]:
         regions = _load_regions(str(analysis_cfg["regions_file"]))
     elif "snpList_file" in analysis_cfg and analysis_cfg["snpList_file"]:
-        if "gwas_file" not in analysis_cfg or not analysis_cfg["gwas_file"]:
-            raise ValueError(f"Analysis {analysis_name}: gwas_file is required when using snpList_file")
-        region_width = int(analysis_cfg.get("region_width", 500000))
-        gwas_file = str(analysis_cfg["gwas_file"])
         snp_list_file = str(analysis_cfg["snpList_file"])
+        region_file_format = str(analysis_cfg.get("region_file_format", "")).strip().lower()
 
-        cache_id = _cache_key(analysis_name, gwas_file, snp_list_file, region_width)
-        cache_file = os.path.join(RESULTS_BASE, "00_cache", "auto_regions", f"{analysis_name}.{cache_id}.tsv")
-
-        use_cache = False
-        if os.path.exists(cache_file):
-            try:
-                cache_mtime = os.path.getmtime(cache_file)
-                gwas_mtime = os.path.getmtime(gwas_file)
-                snplist_mtime = os.path.getmtime(snp_list_file)
-                use_cache = cache_mtime >= max(gwas_mtime, snplist_mtime)
-            except Exception:
-                use_cache = False
-
-        if use_cache:
-            regions = _load_cached_regions(cache_file)
+        if region_file_format == "locus_chr_startend":
+            regions = _regions_from_locus_chr_startend(snp_list_file)
         else:
-            regions = _regions_from_snp_list(
-                gwas_file=gwas_file,
-                snp_list_file=snp_list_file,
-                region_width=region_width,
-            )
-            _write_cached_regions(cache_file, regions)
+            if "gwas_file" not in analysis_cfg or not analysis_cfg["gwas_file"]:
+                raise ValueError(f"Analysis {analysis_name}: gwas_file is required when using snpList_file")
+            region_width = int(analysis_cfg.get("region_width", 500000))
+            gwas_file = str(analysis_cfg["gwas_file"])
+
+            cache_id = _cache_key(analysis_name, gwas_file, snp_list_file, region_width)
+            cache_file = os.path.join(RESULTS_BASE, "00_cache", "auto_regions", f"{analysis_name}.{cache_id}.tsv")
+
+            use_cache = False
+            if os.path.exists(cache_file):
+                try:
+                    cache_mtime = os.path.getmtime(cache_file)
+                    gwas_mtime = os.path.getmtime(gwas_file)
+                    snplist_mtime = os.path.getmtime(snp_list_file)
+                    use_cache = cache_mtime >= max(gwas_mtime, snplist_mtime)
+                except Exception:
+                    use_cache = False
+
+            if use_cache:
+                regions = _load_cached_regions(cache_file)
+            else:
+                regions = _regions_from_snp_list(
+                    gwas_file=gwas_file,
+                    snp_list_file=snp_list_file,
+                    region_width=region_width,
+                )
+                _write_cached_regions(cache_file, regions)
 
         if not regions:
             raise ValueError(f"Analysis {analysis_name}: no regions generated from snpList_file")

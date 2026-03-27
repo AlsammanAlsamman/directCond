@@ -19,11 +19,13 @@ set -euo pipefail
 
 # Check if --jobs flag is present
 HAS_JOBS=false
+ARGS=("$@")
 
-while [[ $# -gt 0 ]]; do
-    case "$1" in
+for ((i=0; i<${#ARGS[@]}; i++)); do
+    arg="${ARGS[$i]}"
+    case "$arg" in
         --jobs)
-            if [[ $# -lt 2 ]]; then
+            if (( i + 1 >= ${#ARGS[@]} )); then
                 echo "Error: --jobs requires a value." >&2
                 exit 1
             fi
@@ -35,14 +37,13 @@ while [[ $# -gt 0 ]]; do
             break
             ;;
     esac
-    shift
 done
 
 # If --jobs is present, use HPC cluster profile
 if [[ "$HAS_JOBS" == "true" ]]; then
     # Apply cluster profile for parallel HPC submission
-    snakemake --profile .smk/profiles/hpc "$@"
+    snakemake --profile .smk/profiles/hpc "${ARGS[@]}"
 else
     # Local execution (default behavior)
-    snakemake "$@"
+    snakemake "${ARGS[@]}"
 fi

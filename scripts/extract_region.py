@@ -37,8 +37,63 @@ def find_column(fieldnames: list[str], candidates: list[str]) -> str:
 
 
 def extract_gwas_window(gwas_file: str, chrom: str, start_bp: int, end_bp: int, out_file: str) -> int:
-    rows = 0
     Path(out_file).parent.mkdir(parents=True, exist_ok=True)
+
+    # Fast path for large GWAS files: delegate row filtering to awk.
+    try:
+        with open(gwas_file, "r", encoding="utf-8", newline="") as src:
+            header_line = src.readline().rstrip("\n\r")
+        if header_line:
+            header_cols = header_line.split("\t")
+            chr_col_name = find_column(header_cols, ["chrom", "chr"])
+            pos_col_name = find_column(header_cols, ["pos", "position", "bp"])
+            chr_idx = header_cols.index(chr_col_name) + 1
+            pos_idx = header_cols.index(pos_col_name) + 1
+            target_chr = chrom.strip().lower().replace("chr", "")
+
+            awk_program = (
+                "BEGIN { FS=\"\\t\"; OFS=\"\\t\"; n=0 } "
+                "NR==1 { print; next } "
+                "{ c=tolower($C); gsub(/^chr/, \"\", c); p=$P+0; "
+                "if (c==T && p>=S && p<=E) { print; n++ } } "
+                "END { print n > \"/dev/stderr\" }"
+            )
+            awk_program = awk_program.replace("$C", f"${chr_idx}").replace("$P", f"${pos_idx}")
+
+            with open(out_file, "w", encoding="utf-8", newline="") as dst:
+                proc = subprocess.run(
+                    [
+                        "awk",
+                        "-v",
+                        f"T={target_chr}",
+                        "-v",
+                        f"S={start_bp}",
+                        "-v",
+                        f"E={end_bp}",
+                        awk_program,
+                        gwas_file,
+                    ],
+                    stdout=dst,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    check=True,
+                )
+            count_text = (proc.stderr or "").strip().splitlines()
+            if count_text:
+                try:
+                    return int(count_text[-1].strip())
+                except ValueError:
+                    pass
+            # Fallback if awk stderr count parsing failed.
+            return sum(1 for _ in open(out_file, "r", encoding="utf-8")) - 1
+    except FileNotFoundError:
+        # awk not available; fallback to pure-Python parsing below.
+        pass
+    except Exception:
+        # Any awk/header issue: fallback to pure-Python parsing below.
+        pass
+
+    rows = 0
 
     with open(gwas_file, "r", encoding="utf-8", newline="") as src, open(
         out_file, "w", encoding="utf-8", newline=""
