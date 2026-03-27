@@ -1,6 +1,8 @@
 import os
 import re
 import sys
+import csv
+import hashlib
 
 sys.path.append("utils")
 from bioconfigme import get_analysis_value, get_results_dir, get_software_module, get_software_value
@@ -58,6 +60,70 @@ def _analysis_bool(path, default_value):
     return bool(value)
 
 
+def _find_col(fieldnames, candidates):
+    lookup = {str(name).strip().lower(): name for name in fieldnames}
+    for cand in candidates:
+        if cand in lookup:
+            return lookup[cand]
+    return None
+
+
+def _load_snp_list(path):
+    rows = []
+    with open(path, "r", encoding="utf-8") as handle:
+        for line in handle:
+            snp = line.strip().replace("\r", "")
+            if snp:
+                rows.append(snp)
+    if not rows:
+        raise ValueError(f"Empty snpList_file: {path}")
+    return rows
+
+
+def _regions_from_snp_list(gwas_file, snp_list_file):
+    targets = _load_snp_list(snp_list_file)
+    target_set = set(targets)
+    found = {}
+
+    with open(gwas_file, "r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        if not reader.fieldnames:
+            raise ValueError(f"GWAS file has no header: {gwas_file}")
+
+        snp_col = _find_col(reader.fieldnames, ["snp", "rsid", "varid", "marker", "id"])
+        chr_col = _find_col(reader.fieldnames, ["chr", "chrom", "chromosome"])
+        pos_col = _find_col(reader.fieldnames, ["pos", "position", "bp"])
+        if snp_col is None or chr_col is None or pos_col is None:
+            raise ValueError("GWAS header must contain SNP/CHR/POS columns for snpList-based extraction")
+
+        for row in reader:
+            snp = str(row.get(snp_col, "")).strip()
+            if snp not in target_set or snp in found:
+                continue
+            chrom = str(row.get(chr_col, "")).strip()
+            try:
+                pos = int(float(row.get(pos_col, "")))
+            except Exception:
+                continue
+            if chrom:
+                found[snp] = {"chr": chrom, "pos": pos}
+            if len(found) == len(target_set):
+                break
+
+    missing = [s for s in targets if s not in found]
+    if missing:
+        preview = ", ".join(missing[:10])
+        suffix = " ..." if len(missing) > 10 else ""
+        raise ValueError(f"SNPs from snpList_file not found in GWAS: {preview}{suffix}")
+
+    return {snp: found[snp] for snp in targets}
+
+
+def _cache_key(*parts):
+    text = "|".join(str(p) for p in parts)
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:12]
+
+
 TARGET_ANALYSES = get_analysis_value(["target_analyses"])
 RESULTS_DIR = get_results_dir()
 PROJECT_NAME = str(get_analysis_value(["project_name"]))
@@ -68,8 +134,20 @@ RESOURCE_TIME = _resource_value("time", "00:30:00")
 
 ANALYSIS_REGIONS = {}
 for analysis_name, analysis_cfg in TARGET_ANALYSES.items():
-    regions_file = analysis_cfg["regions_file"]
-    ANALYSIS_REGIONS[analysis_name] = _load_regions(regions_file)
+    if analysis_cfg.get("regions_file"):
+        ANALYSIS_REGIONS[analysis_name] = _load_regions(str(analysis_cfg["regions_file"]))
+    elif analysis_cfg.get("snpList_file"):
+        gwas_file = str(analysis_cfg["gwas_file"])
+        snp_list_file = str(analysis_cfg["snpList_file"])
+        region_width = int(analysis_cfg.get("region_width", 500000))
+        cache_id = _cache_key(analysis_name, gwas_file, snp_list_file, region_width)
+        cache_file = os.path.join(RESULTS_BASE, "00_cache", "auto_regions", f"{analysis_name}.{cache_id}.tsv")
+        if os.path.exists(cache_file):
+            ANALYSIS_REGIONS[analysis_name] = _load_regions(cache_file)
+        else:
+            ANALYSIS_REGIONS[analysis_name] = _regions_from_snp_list(gwas_file, snp_list_file)
+    else:
+        raise ValueError(f"Analysis {analysis_name} must define regions_file or snpList_file")
 
 PLOT_INDEX = {}
 for analysis_name, regions in ANALYSIS_REGIONS.items():

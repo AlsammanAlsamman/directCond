@@ -246,11 +246,65 @@ FILENAME==ARGV[4] {
   mv -f "$tmp_cma" "$final_cma"
 }
 
+synthesize_identity_cojo_from_ma() {
+  local out_cma="$1"
+
+  awk '
+BEGIN { FS="\t"; OFS="\t" }
+FILENAME==ARGV[1] {
+  if ($2 != "") {
+    bim_chr[$2]=$1
+    bim_bp[$2]=$4
+  }
+  next
+}
+FNR==1 {
+  print "Chr","SNP","bp","refA","freq","b","se","p","n","freq_geno","bC","bC_se","pC"
+  next
+}
+{
+  snp=$1
+  if (snp == "" || !(snp in bim_chr) || !(snp in bim_bp)) next
+  print bim_chr[snp], snp, bim_bp[snp], $2, $4, $5, $6, $7, $8, $4, $5, $6, $7
+}
+' "${BFILE_PREFIX}.bim" "$MA_FILE" > "$out_cma"
+}
+
+filter_condition_snps_to_available() {
+  local requested_file="$1"
+  local filtered_file="$2"
+
+  awk '
+FILENAME==ARGV[1] {
+  if (FNR > 1 && $1 != "") ma[$1]=1
+  next
+}
+FILENAME==ARGV[2] {
+  if ($2 != "") bim[$2]=1
+  next
+}
+{
+  snp=$1
+  gsub(/\r/, "", snp)
+  if (snp != "" && (snp in ma) && (snp in bim) && !(snp in seen)) {
+    print snp
+    seen[snp]=1
+  }
+}
+' "$MA_FILE" "${BFILE_PREFIX}.bim" "$requested_file" > "$filtered_file"
+}
+
 printf "SNP\tA1\tA2\tfreq\tb\tse\tp\tN\n" > "$MA_FILE"
 
 awk '
 BEGIN { FS="\t"; OFS="\t" }
-NR==1 {
+FILENAME==ARGV[1] {
+  if ($2 != "") {
+    bim[$2]=1
+  }
+  next
+}
+FNR==1 {
   for (i=1; i<=NF; i++) {
     h=tolower($i)
     gsub(/^ +| +$/, "", h)
@@ -282,7 +336,9 @@ NR==1 {
   b=$c_b
   se=$c_se
   p=$c_p
-  if (c_hstatus && $c_hstatus=="no_ref_match") next
+  hstatus=(c_hstatus ? $c_hstatus : "")
+  gsub(/^[[:space:]]+|[[:space:]]+$/, "", hstatus)
+  if (hstatus=="no_ref_match") next
 
   snp=""
   if (c_rsid && $c_rsid!="") {
@@ -292,13 +348,14 @@ NR==1 {
   } else {
     snp=chr ":" pos ":" a2 ":" a1
   }
+  gsub(/^[[:space:]]+|[[:space:]]+$/, "", snp)
   freq=(c_freq ? $c_freq : 0.5)
   n=(c_n ? $c_n : 100000)
 
-  if (snp=="" || a1=="" || a2=="" || b=="" || se=="" || p=="") next
+  if (snp=="" || !(snp in bim) || a1=="" || a2=="" || b=="" || se=="" || p=="") next
   print snp, a1, a2, freq, b, se, p, n
 }
-' "$GWAS_FILE" >> "$MA_FILE"
+' "${BFILE_PREFIX}.bim" "$GWAS_FILE" >> "$MA_FILE"
 
 if [[ $(wc -l < "$MA_FILE") -le 1 ]]; then
   echo "No valid records written to MA file: $MA_FILE" >&2
@@ -306,6 +363,8 @@ if [[ $(wc -l < "$MA_FILE") -le 1 ]]; then
 fi
 
 if [[ -n "$COND_SNPS_FILE" ]]; then
+  RAW_COND_FILE="${COND_FILE}.requested"
+
   awk '{
     gsub(/\r/, "", $0)
     if (NF > 0) {
@@ -313,35 +372,43 @@ if [[ -n "$COND_SNPS_FILE" ]]; then
       gsub(/\r/, "", snp)
       print snp
     }
-  }' "$COND_SNPS_FILE" > "$COND_FILE"
+  }' "$COND_SNPS_FILE" > "$RAW_COND_FILE"
 
-  if [[ ! -s "$COND_FILE" ]]; then
+  if [[ ! -s "$RAW_COND_FILE" ]]; then
     echo "Condition SNP list is empty after filtering blank lines: $COND_SNPS_FILE" >&2
     exit 1
   fi
 
-  run_individual_list_conditioning "$COND_FILE"
+  filter_condition_snps_to_available "$RAW_COND_FILE" "$COND_FILE"
 
-  if ! "$GCTA_BIN" \
-    --bfile "$BFILE_PREFIX" \
-    --chr "$TARGET_CHR" \
-    --cojo-file "$MA_FILE" \
-    --cojo-cond "$COND_FILE" \
-    --out "$OUT_PREFIX"; then
-    echo "GCTA failed while conditioning on SNP list: $COND_SNPS_FILE" >&2
-    exit 1
+  if [[ -s "$COND_FILE" ]]; then
+    echo "Using $(wc -l < "$COND_FILE") condition SNP(s) matched to this locus from $COND_SNPS_FILE." >&2
+
+    run_individual_list_conditioning "$COND_FILE"
+
+    if ! "$GCTA_BIN" \
+      --bfile "$BFILE_PREFIX" \
+      --chr "$TARGET_CHR" \
+      --cojo-file "$MA_FILE" \
+      --cojo-cond "$COND_FILE" \
+      --out "$OUT_PREFIX"; then
+      echo "GCTA failed while conditioning on SNP list: $COND_SNPS_FILE" >&2
+      exit 1
+    fi
+
+    if [[ ! -f "${OUT_PREFIX}.cma.cojo" ]]; then
+      echo "Expected COJO output missing: ${OUT_PREFIX}.cma.cojo" >&2
+      exit 1
+    fi
+
+    append_conditioned_snps_to_final_cma "${OUT_PREFIX}.cma.cojo"
+
+    printf "ok\tmode=list\tchr=%s\tpos=%s\tn_cond=%s\tcond_source=%s\tindiv_summary=%s\n" \
+      "$TARGET_CHR" "$TARGET_POS" "$(wc -l < "$COND_FILE")" "$COND_SNPS_FILE" "$OUT_INDIV_SUMMARY" > "$OUT_DONE"
+    exit 0
   fi
 
-  if [[ ! -f "${OUT_PREFIX}.cma.cojo" ]]; then
-    echo "Expected COJO output missing: ${OUT_PREFIX}.cma.cojo" >&2
-    exit 1
-  fi
-
-  append_conditioned_snps_to_final_cma "${OUT_PREFIX}.cma.cojo"
-
-  printf "ok\tmode=list\tchr=%s\tpos=%s\tn_cond=%s\tcond_source=%s\tindiv_summary=%s\n" \
-    "$TARGET_CHR" "$TARGET_POS" "$(wc -l < "$COND_FILE")" "$COND_SNPS_FILE" "$OUT_INDIV_SUMMARY" > "$OUT_DONE"
-  exit 0
+  echo "No requested condition SNPs from $COND_SNPS_FILE are available in this locus after harmonization; falling back to iterative conditioning." >&2
 fi
 
 printf "snp\tn_significant_after_cond\tstatus\tcma_file\n" > "$OUT_INDIV_SUMMARY"
@@ -442,8 +509,17 @@ run_gcta_attempt() {
 build_initial_candidate_list "$MA_FILE" "$INITIAL_CANDIDATES_FILE"
 
 if [[ ! -s "$INITIAL_CANDIDATES_FILE" ]]; then
-  echo "No SNPs with p < ${P_THRESHOLD} found in $MA_FILE" >&2
-  exit 1
+  echo "No SNPs with p < ${P_THRESHOLD} found in $MA_FILE; writing unconditioned COJO outputs for this locus." >&2
+  : > "$COND_FILE"
+  printf "snp\tn_significant_after_cond\tstatus\tcma_file\n" > "$OUT_INDIV_SUMMARY"
+  synthesize_identity_cojo_from_ma "${OUT_PREFIX}.cma.cojo"
+  if [[ ! -s "${OUT_PREFIX}.cma.cojo" ]]; then
+    echo "Unable to synthesize COJO output from $MA_FILE" >&2
+    exit 1
+  fi
+  printf "ok\tmode=iterative\tchr=%s\tpos=%s\tlast_cond_snp=NA\tn_cond=0\tskipped_collinear=0\tinitial_candidates=0\tremaining_candidates=0\n" \
+    "$TARGET_CHR" "$TARGET_POS" > "$OUT_DONE"
+  exit 0
 fi
 
 cp -f "$INITIAL_CANDIDATES_FILE" "$REMAINING_CANDIDATES_FILE"

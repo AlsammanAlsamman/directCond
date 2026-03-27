@@ -41,13 +41,6 @@ def _load_regions(path):
     return rows
 
 
-def _resource_value(name, default_value):
-    try:
-        return int(get_analysis_value(["default_resources", name])) if name in {"mem_mb", "cores"} else str(get_analysis_value(["default_resources", name]))
-    except Exception:
-        return default_value
-
-
 def _find_col(fieldnames, candidates):
     lookup = {str(name).strip().lower(): name for name in fieldnames}
     for cand in candidates:
@@ -116,12 +109,8 @@ TARGET_ANALYSES = get_analysis_value(["target_analyses"])
 RESULTS_DIR = get_results_dir()
 PROJECT_NAME = str(get_analysis_value(["project_name"]))
 RESULTS_BASE = os.path.join(RESULTS_DIR, PROJECT_NAME)
-RESOURCE_MEM_MB = _resource_value("mem_mb", 32000)
-RESOURCE_CORES = _resource_value("cores", 2)
-RESOURCE_TIME = _resource_value("time", "00:30:00")
 
 ANALYSIS_REGIONS = {}
-COJO_INDEX = {}
 for analysis_name, analysis_cfg in TARGET_ANALYSES.items():
     if analysis_cfg.get("regions_file"):
         regions = _load_regions(str(analysis_cfg["regions_file"]))
@@ -139,68 +128,61 @@ for analysis_name, analysis_cfg in TARGET_ANALYSES.items():
         raise ValueError(f"Analysis {analysis_name} must define regions_file or snpList_file")
 
     ANALYSIS_REGIONS[analysis_name] = regions
-    for locus_id, locus_data in regions.items():
-        COJO_INDEX[(analysis_name, locus_id)] = {
-            "chr": locus_data["chr"],
-            "pos": locus_data["pos"],
-            "reference_population": str(analysis_cfg["reference_population"]),
-        }
 
-ALL_COJO_DONE_TARGETS = [
-    os.path.join(RESULTS_BASE, "03_cojo", analysis_name, locus_id, "cojo.done")
-    for analysis_name, regions in ANALYSIS_REGIONS.items()
-    for locus_id in sorted(regions.keys())
+R_MODULE = get_software_module("r")
+R_LIBS_USER = str(get_software_value("r", ["params", "r_libs_user"], default=""))
+
+ALL_CONDITIONED_SNP_REPORT_XLSX = [
+    os.path.join(RESULTS_BASE, "05_reports", analysis_name, "conditioned_snps.xlsx")
+    for analysis_name in sorted(ANALYSIS_REGIONS.keys())
 ]
 
-GCTA_MODULE = get_software_module("gcta")
-GCTA_BIN = str(get_software_value("gcta", ["binary"], default="gcta"))
 
-
-rule cojo_condition:
+rule conditioned_snp_excel_report:
     input:
-        ALL_COJO_DONE_TARGETS
+        ALL_CONDITIONED_SNP_REPORT_XLSX
 
 
-rule cojo_condition_per_locus:
+rule conditioned_snp_excel_report_per_analysis:
     input:
-        harmonize_done=os.path.join(RESULTS_BASE, "02_harmonized", "{analysis}", "{locus_id}", "harmonize.done"),
-        gwas_harmonized=os.path.join(RESULTS_BASE, "02_harmonized", "{analysis}", "{locus_id}", "gwas_harmonized.tsv"),
-        bed=os.path.join(RESULTS_BASE, "01_extract_regions", "{analysis}", "{locus_id}", "ref_subset.bed"),
-        bim=os.path.join(RESULTS_BASE, "01_extract_regions", "{analysis}", "{locus_id}", "ref_subset.bim"),
-        fam=os.path.join(RESULTS_BASE, "01_extract_regions", "{analysis}", "{locus_id}", "ref_subset.fam"),
+        gwas_file=lambda wc: str(TARGET_ANALYSES[wc.analysis]["gwas_file"]),
+        cojo_done=lambda wc: [
+            os.path.join(RESULTS_BASE, "03_cojo", wc.analysis, locus_id, "cojo.done")
+            for locus_id in sorted(ANALYSIS_REGIONS[wc.analysis].keys())
+        ],
+        cojo_final=lambda wc: [
+            os.path.join(RESULTS_BASE, "03_cojo", wc.analysis, locus_id, "cojo.cma.cojo")
+            for locus_id in sorted(ANALYSIS_REGIONS[wc.analysis].keys())
+        ],
+        cond_snp=lambda wc: [
+            os.path.join(RESULTS_BASE, "03_cojo", wc.analysis, locus_id, "cojo.cond.snp")
+            for locus_id in sorted(ANALYSIS_REGIONS[wc.analysis].keys())
+        ],
     output:
-        done=os.path.join(RESULTS_BASE, "03_cojo", "{analysis}", "{locus_id}", "cojo.done"),
-        cojo=os.path.join(RESULTS_BASE, "03_cojo", "{analysis}", "{locus_id}", "cojo.cma.cojo"),
-        ma=os.path.join(RESULTS_BASE, "03_cojo", "{analysis}", "{locus_id}", "cojo.ma"),
-        cond_snp=os.path.join(RESULTS_BASE, "03_cojo", "{analysis}", "{locus_id}", "cojo.cond.snp"),
-        indiv_summary=os.path.join(RESULTS_BASE, "03_cojo", "{analysis}", "{locus_id}", "cojo.individual.summary.tsv"),
+        xlsx=os.path.join(RESULTS_BASE, "05_reports", "{analysis}", "conditioned_snps.xlsx"),
     params:
-        target_chr=lambda wc: COJO_INDEX[(wc.analysis, wc.locus_id)]["chr"],
-        target_pos=lambda wc: COJO_INDEX[(wc.analysis, wc.locus_id)]["pos"],
-        gcta_module=GCTA_MODULE,
-        gcta_bin=GCTA_BIN,
+        analysis_name=lambda wc: wc.analysis,
+        cojo_dir=os.path.join(RESULTS_BASE, "03_cojo", "{analysis}"),
+        r_module=R_MODULE,
+        r_libs_user=R_LIBS_USER,
     log:
-        os.path.join(RESULTS_BASE, "log", "cojo_condition", "{analysis}", "{locus_id}.log"),
+        os.path.join(RESULTS_BASE, "log", "conditioned_snp_report", "{analysis}.log"),
     resources:
-        mem_mb=RESOURCE_MEM_MB,
-        cores=RESOURCE_CORES,
-        time=RESOURCE_TIME,
+        mem_mb=64000,
+        cores=1,
+        time="01:00:00",
     wildcard_constraints:
         analysis=r"[A-Za-z0-9_\-\.]+",
-        locus_id=r"[A-Za-z0-9_\-\.]+",
     shell:
         r"""
         set -euo pipefail
-        mkdir -p "$(dirname {output.done})" "$(dirname {log})"
-        if command -v module >/dev/null 2>&1; then module load {params.gcta_module}; fi
-        bash scripts/run_cojo_condition.sh \
-                    --gwas-file {input.gwas_harmonized} \
-          --bfile-prefix "$(dirname {input.bed})/ref_subset" \
-          --target-chr {params.target_chr} \
-          --target-pos {params.target_pos} \
-          --out-prefix "$(dirname {output.cojo})/cojo" \
-                    --out-indiv-summary {output.indiv_summary} \
-          --out-done {output.done} \
-          --gcta-bin {params.gcta_bin} \
+        mkdir -p "$(dirname {output.xlsx})" "$(dirname {log})"
+        if command -v module >/dev/null 2>&1; then module load {params.r_module}; fi
+        if [ -n "{params.r_libs_user}" ]; then export R_LIBS_USER='{params.r_libs_user}'; fi
+        Rscript scripts/export_conditioned_snps_excel.R \
+          --analysis {params.analysis_name} \
+          --gwas-file {input.gwas_file} \
+          --cojo-dir {params.cojo_dir} \
+          --out-xlsx {output.xlsx} \
           > {log} 2>&1
         """

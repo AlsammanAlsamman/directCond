@@ -16,11 +16,23 @@ target_analyses:
   #   regions_file: "inputs/regions.tsv"
   #   gwas_file: "inputs/ASIANq2.tsv"
   #   reference_population: "EAS"
-  RABGAP1L_ASIAN:
-    regions_file: "inputs/regions.tsv"
-    gwas_file: "inputs/ASIANq2.tsv"
-    reference_population: "EAS"
-    snpList_file: "inputs/target_snps.txt"
+  # RABGAP1L_ASIAN:
+  #   regions_file: "inputs/regions.tsv"
+  #   gwas_file: "inputs/ASIANq2.tsv"
+  #   reference_population: "EAS"
+  #   snpList_file: "inputs/target_snps.txt"
+  # Hispanic:
+  #   snpList_file: "inputs/target_snps.txt"
+  #   gwas_file: "inputs/Hisp.tsv"
+  #   reference_population: "EAS"
+  #   region_width: 500000
+  Hispanic:
+    snpList_file: "inputs/region_start_end.txt"
+    gwas_file: "inputs/Hisp.tsv"
+    reference_population: "AMR"
+    region_file_format: "locus_chr_startend"
+    region_width: 500000
+
 
 plotting:
   use_ref_ld: false

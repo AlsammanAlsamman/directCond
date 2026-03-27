@@ -30,7 +30,7 @@ Simple Snakemake workflow for regional GWAS conditional analysis (COJO) and plot
    - set `project_name`
    - define `target_analyses`
    - point to GWAS and region input files
-   - optionally set `snpList_file` for any analysis to first condition on each SNP in that file individually and then run a combined conditioning pass on all listed SNPs during Step 03
+   - optionally set `snpList_file` to define locus centers for Step 01 when you do not provide a `regions_file`
 2. Edit `configs/software.yml`
    - set modules/binaries for `plink2`, `gcta`, and `r`
    - set `r.params.r_libs_user` if needed
@@ -57,6 +57,9 @@ snakemake --snakefile Snakefile --cores 2 -R cojo_condition
 
 # Step 04
 snakemake --snakefile Snakefile --cores 2 -R plot_conditional_iterations
+
+# Excel report of conditioned SNPs per locus
+snakemake --snakefile Snakefile --cores 1 conditioned_snp_excel_report
 ```
 
 ## Key outputs
@@ -65,6 +68,7 @@ For each analysis/locus under `results/<project_name>/`:
 
 - `03_cojo/<analysis>/<locus>/cojo.ma`
 - `03_cojo/<analysis>/<locus>/cojo.cma.cojo`
+- `05_reports/<analysis>/conditioned_snps.xlsx`
 - `04_plots/<analysis>/<locus>/before_conditioning.pdf`
 - `04_plots/<analysis>/<locus>/after_conditioning.pdf`
 - `04_plots/<analysis>/<locus>/before_conditioning.png`
@@ -75,6 +79,8 @@ For each analysis/locus under `results/<project_name>/`:
 ## Notes
 
 - If running on HPC, ensure module names in `configs/software.yml` match your environment.
-- If `target_analyses.<name>.snpList_file` is set, `cojo_condition` will first run one GCTA pass per listed SNP and write `cojo.individual.summary.tsv`, then run one combined GCTA pass with `--cojo-cond` on the full list instead of the default iterative selection workflow.
-- Iterative COJO now builds one fixed list of SNPs with `p < 5e-8`, conditions on them in significance order, and only removes candidates that lose significance after each conditioning step. It does not add new SNPs to the candidate list.
+- The folder name under `results/<project_name>/.../<locus>/` is a locus label inherited from the region-definition input. It is not treated as a required conditioning SNP.
+- Step 03 always runs locus-local iterative COJO using the harmonized GWAS and the matching locus PLINK subset. Conditioning stops when no matched SNP in that locus remains significant.
+- If no matched SNP in a locus passes the significance threshold, Step 03 now writes an unconditioned final COJO table for that locus so downstream plotting can still run.
+- The Excel report rule reads the original GWAS file from `target_analyses.<name>.gwas_file`, joins it to each locus `cojo.cond.snp` list and `cojo.cma.cojo`, and writes a styled workbook per analysis.
 - Plotting is robust to missing optional R packages and uses fallbacks when needed.

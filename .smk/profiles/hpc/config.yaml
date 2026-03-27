@@ -1,0 +1,41 @@
+################################################################################
+# Snakemake HPC Cluster Profile Configuration
+# Enables parallel job submission to SLURM (or other cluster systems)
+# Each locus becomes a separate HPC job with 32GB memory
+################################################################################
+
+# Cluster job submission command
+# This uses sbatch for SLURM; adjust for PBS (qsub), LSF (bsub), etc.
+cluster: "sbatch --job-name={rule}-{wildcards} --mem={resources.mem_mb}M --cpus-per-task={resources.cores} --time={resources.time} --output={log}.slurm.log --error={log}.slurm.err"
+
+# Note: Command-line --jobs parameter overrides this value
+# Default shown here, but typically set via: ./submit.sh --jobs 25 <target>
+jobs: 25
+
+# Restart failed jobs (optional)
+restart-times: 1
+
+# Use local execution for rules that don't need cluster resources
+local-cores: 2
+
+# Allow extra time for cluster job outputs to become visible on shared storage.
+latency-wait: 60
+
+################################################################################
+# USAGE:
+#
+#   ./submit.sh --jobs 25 cojo_condition
+#   → Submits each locus COJO as separate HPC job (max 25 parallel)
+#   → Each job: 32GB memory, 2 cores, 30 min wall time
+#
+# CUSTOMIZE FOR YOUR HPC:
+# 
+# SLURM (default):
+#   cluster: "sbatch --job-name={rule}-{wildcards} --mem={resources.mem_mb}M ..."
+#
+# PBS/Torque:
+#   cluster: "qsub -N {rule}-{wildcards} -l vmem={resources.mem_mb}mb ..."
+#
+# LSF:
+#   cluster: "bsub -J {rule}-{wildcards} -M {resources.mem_mb} ..."
+################################################################################

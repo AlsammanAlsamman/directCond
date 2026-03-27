@@ -5,6 +5,7 @@ include: "rules/harmonize_gwas.smk"
 include: "rules/cojo_condition.smk"
 include: "rules/plot_conditional_iterations.smk"
 include: "rules/indiv_cond_eval.smk"
+include: "rules/conditioned_snps_report.smk"
 
 rule all:
     input:
